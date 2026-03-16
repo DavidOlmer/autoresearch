@@ -1,114 +1,186 @@
-# autoresearch
+# Rebel TOV Autoresearch — Agent Instructions
 
-This is an experiment to have the LLM do its own research.
+This is an autonomous research system for training models on Rebel Group's consulting documents.
+
+## Mission
+
+Train models that:
+1. **Phase A**: Generate document embeddings clustered by client × project type
+2. **Phase B**: Generate text in Rebel's tone of voice with pyramid writing compliance
 
 ## Setup
 
-To set up a new experiment, work with the user to:
+Before starting experiments:
 
-1. **Agree on a run tag**: propose a tag based on today's date (e.g. `mar5`). The branch `autoresearch/<tag>` must not already exist — this is a fresh run.
-2. **Create the branch**: `git checkout -b autoresearch/<tag>` from current master.
-3. **Read the in-scope files**: The repo is small. Read these files for full context:
-   - `README.md` — repository context.
-   - `prepare.py` — fixed constants, data prep, tokenizer, dataloader, evaluation. Do not modify.
-   - `train.py` — the file you modify. Model architecture, optimizer, training loop.
-4. **Verify data exists**: Check that `~/.cache/autoresearch/` contains data shards and a tokenizer. If not, tell the human to run `uv run prepare.py`.
-5. **Initialize results.tsv**: Create `results.tsv` with just the header row. The baseline will be recorded after the first run.
-6. **Confirm and go**: Confirm setup looks good.
+1. **Create branch**: `git checkout -b autoresearch/<date>-<phase>` (e.g., `autoresearch/mar16-embeddings`)
+2. **Read context**:
+   - `CONTEXT.md` — full project context and goals
+   - `README.md` — original autoresearch setup
+   - `data/corpus.jsonl` — extracted Rebel documents
+3. **Verify data**: Check `data/corpus.jsonl` exists and has content
+4. **Initialize results**: Create `results.tsv` with header row
+5. **Confirm baseline**: Run baseline experiment first
 
-Once you get confirmation, kick off the experimentation.
+## Multi-Agent Loop
 
-## Experimentation
+You operate as THREE agents in sequence:
 
-Each experiment runs on a single GPU. The training script runs for a **fixed time budget of 5 minutes** (wall clock training time, excluding startup/compilation). You launch it simply as: `uv run train.py`.
+### 1. RESEARCH AGENT
+
+Before each experiment, search for relevant techniques:
+
+**Sources to query:**
+- arXiv: `https://arxiv.org/search/?query=<terms>&searchtype=all`
+- HuggingFace: `https://huggingface.co/models?search=<terms>`
+- Semantic Scholar: `https://api.semanticscholar.org/graph/v1/paper/search?query=<terms>`
+- Recent blogs: sentence-transformers, MTEB leaderboard, fine-tuning guides
+
+**Search terms by phase:**
+- Phase A: "sentence embeddings clustering", "domain-specific embeddings", "contrastive learning documents", "MTEB benchmark", "document similarity"
+- Phase B: "style transfer LLM", "tone of voice fine-tuning", "PEFT LoRA writing style", "constitutional AI writing"
+
+**Output**: List 2-3 relevant papers/techniques with key insights.
+
+### 2. HYPOTHESIS AGENT
+
+Generate hypotheses based on research:
+
+**Template:**
+```
+HYPOTHESIS: [One sentence description]
+RATIONALE: [Why this might work, based on research]
+IMPLEMENTATION: [Specific code changes needed]
+EXPECTED IMPACT: [High/Medium/Low] on [metric]
+RISK: [What could go wrong]
+```
+
+**Generate 3 hypotheses, then rank by:**
+- Expected impact (1-5)
+- Implementation effort (1-5, lower is better)
+- Risk level (1-5, lower is better)
+
+**Score = Impact × (6 - Effort) × (6 - Risk)**
+
+Pick the highest scoring hypothesis.
+
+### 3. EXPERIMENT AGENT
+
+Execute the top hypothesis:
+
+1. **Modify code**: Edit `train_embeddings.py` (Phase A) or `train_tov.py` (Phase B)
+2. **Commit**: `git commit -am "Experiment: <description>"`
+3. **Run**: `uv run train_embeddings.py > run.log 2>&1` (or `train_tov.py`)
+4. **Evaluate**: Extract metrics from log
+5. **Decide**: Keep (improved) or Discard (same/worse)
+6. **Log**: Append to `results.tsv`
+
+## Metrics
+
+### Phase A (Embeddings)
+```
+cluster_silhouette:  0.35      # Cluster quality (-1 to 1, higher better)
+pyramid_correlation: 0.62      # Correlation with pyramid scores
+training_seconds:    300.1
+peak_vram_mb:        8192
+```
+
+### Phase B (TOV Generation)
+```
+tov_score:           0.78      # Style consistency (0-1)
+pyramid_score:       0.65      # Structure compliance (0-1)
+perplexity:          12.3      # Lower is better
+training_seconds:    300.1
+```
+
+## Results Format
+
+Tab-separated `results.tsv`:
+```
+commit	metric1	metric2	memory_gb	status	hypothesis	research_source
+a1b2c3d	0.350	0.620	8.0	keep	baseline	-
+b2c3d4e	0.380	0.650	8.2	keep	Add hard negatives from same project	arxiv:2201.xxxxx
+c3d4e5f	0.340	0.600	8.0	discard	Switch to MiniLM base	HF:sentence-transformers
+```
+
+## Constraints
 
 **What you CAN do:**
-- Modify `train.py` — this is the only file you edit. Everything is fair game: model architecture, optimizer, hyperparameters, training loop, batch size, model size, etc.
+- Modify `train_embeddings.py` or `train_tov.py`
+- Search papers and HuggingFace for techniques
+- Try different model architectures, loss functions, hyperparameters
+- Add new training strategies (contrastive, triplet, etc.)
 
 **What you CANNOT do:**
-- Modify `prepare.py`. It is read-only. It contains the fixed evaluation, data loading, tokenizer, and training constants (time budget, sequence length, etc).
-- Install new packages or add dependencies. You can only use what's already in `pyproject.toml`.
-- Modify the evaluation harness. The `evaluate_bpb` function in `prepare.py` is the ground truth metric.
+- Modify `prepare.py` or `scripts/extract_corpus.py`
+- Install new packages (only what's in `pyproject.toml`)
+- Modify the evaluation functions
+- Skip the research phase
 
-**The goal is simple: get the lowest val_bpb.** Since the time budget is fixed, you don't need to worry about training time — it's always 5 minutes. Everything is fair game: change the architecture, the optimizer, the hyperparameters, the batch size, the model size. The only constraint is that the code runs without crashing and finishes within the time budget.
+## NEVER STOP
 
-**VRAM** is a soft constraint. Some increase is acceptable for meaningful val_bpb gains, but it should not blow up dramatically.
+Once experiments begin:
+- Do NOT pause to ask the human
+- Do NOT ask "should I continue?"
+- If stuck, search for more papers
+- If out of ideas, try combining previous near-misses
+- Run until manually interrupted
 
-**Simplicity criterion**: All else being equal, simpler is better. A small improvement that adds ugly complexity is not worth it. Conversely, removing something and getting equal or better results is a great outcome — that's a simplification win. When evaluating whether to keep a change, weigh the complexity cost against the improvement magnitude. A 0.001 val_bpb improvement that adds 20 lines of hacky code? Probably not worth it. A 0.001 val_bpb improvement from deleting code? Definitely keep. An improvement of ~0 but much simpler code? Keep.
+**Target: 12 experiments/hour, 100 experiments overnight**
 
-**The first run**: Your very first run should always be to establish the baseline, so you will run the training script as is.
+## Experiment Ideas (Starting Points)
 
-## Output format
+### Phase A — Embeddings
+1. Different base models (MiniLM, MPNet, E5, BGE)
+2. Contrastive loss with hard negatives (same project = positive, different project = negative)
+3. Multi-task: cluster loss + pyramid score prediction
+4. Domain adaptation: continue pretraining on Rebel corpus
+5. Pooling strategies (mean, CLS, attention-weighted)
 
-Once the script finishes it prints a summary like this:
+### Phase B — TOV
+1. LoRA fine-tuning on different layers
+2. Style tokens / control codes
+3. Constitutional AI: reject non-pyramid outputs
+4. Reward model trained on human-rated Rebel texts
+5. Mixture of experts: one per document type
 
-```
----
-val_bpb:          0.997900
-training_seconds: 300.1
-total_seconds:    325.9
-peak_vram_mb:     45060.2
-mfu_percent:      39.80
-total_tokens_M:   499.6
-num_steps:        953
-num_params_M:     50.3
-depth:            8
-```
+## Logging
 
-Note that the script is configured to always stop after 5 minutes, so depending on the computing platform of this computer the numbers might look different. You can extract the key metric from the log file:
+After each experiment, update `experiment_log.md`:
 
-```
-grep "^val_bpb:" run.log
-```
+```markdown
+## Experiment <N> — <timestamp>
 
-## Logging results
+### Research
+- Paper 1: [title] — key insight
+- Paper 2: [title] — key insight
 
-When an experiment is done, log it to `results.tsv` (tab-separated, NOT comma-separated — commas break in descriptions).
+### Hypothesis
+<selected hypothesis>
 
-The TSV has a header row and 5 columns:
+### Result
+- Metric: X.XXX (baseline: Y.YYY, delta: +/-Z.ZZZ)
+- Status: keep/discard
+- Learning: <what did we learn>
 
-```
-commit	val_bpb	memory_gb	status	description
-```
-
-1. git commit hash (short, 7 chars)
-2. val_bpb achieved (e.g. 1.234567) — use 0.000000 for crashes
-3. peak memory in GB, round to .1f (e.g. 12.3 — divide peak_vram_mb by 1024) — use 0.0 for crashes
-4. status: `keep`, `discard`, or `crash`
-5. short text description of what this experiment tried
-
-Example:
-
-```
-commit	val_bpb	memory_gb	status	description
-a1b2c3d	0.997900	44.0	keep	baseline
-b2c3d4e	0.993200	44.2	keep	increase LR to 0.04
-c3d4e5f	1.005000	44.0	discard	switch to GeLU activation
-d4e5f6g	0.000000	0.0	crash	double model width (OOM)
+### Next
+- Promising direction: <based on this result>
 ```
 
-## The experiment loop
+## Quick Reference
 
-The experiment runs on a dedicated branch (e.g. `autoresearch/mar5` or `autoresearch/mar5-gpu0`).
+```bash
+# Run Phase A experiment
+uv run train_embeddings.py > run.log 2>&1
 
-LOOP FOREVER:
+# Run Phase B experiment
+uv run train_tov.py > run.log 2>&1
 
-1. Look at the git state: the current branch/commit we're on
-2. Tune `train.py` with an experimental idea by directly hacking the code.
-3. git commit
-4. Run the experiment: `uv run train.py > run.log 2>&1` (redirect everything — do NOT use tee or let output flood your context)
-5. Read out the results: `grep "^val_bpb:\|^peak_vram_mb:" run.log`
-6. If the grep output is empty, the run crashed. Run `tail -n 50 run.log` to read the Python stack trace and attempt a fix. If you can't get things to work after more than a few attempts, give up.
-7. Record the results in the tsv (NOTE: do not commit the results.tsv file, leave it untracked by git)
-8. If val_bpb improved (lower), you "advance" the branch, keeping the git commit
-9. If val_bpb is equal or worse, you git reset back to where you started
+# Check metrics
+grep "^cluster_silhouette:\|^pyramid_correlation:" run.log
 
-The idea is that you are a completely autonomous researcher trying things out. If they work, keep. If they don't, discard. And you're advancing the branch so that you can iterate. If you feel like you're getting stuck in some way, you can rewind but you should probably do this very very sparingly (if ever).
+# Keep experiment
+git add -A && git commit -m "Keep: <description>"
 
-**Timeout**: Each experiment should take ~5 minutes total (+ a few seconds for startup and eval overhead). If a run exceeds 10 minutes, kill it and treat it as a failure (discard and revert).
-
-**Crashes**: If a run crashes (OOM, or a bug, or etc.), use your judgment: If it's something dumb and easy to fix (e.g. a typo, a missing import), fix it and re-run. If the idea itself is fundamentally broken, just skip it, log "crash" as the status in the tsv, and move on.
-
-**NEVER STOP**: Once the experiment loop has begun (after the initial setup), do NOT pause to ask the human if you should continue. Do NOT ask "should I keep going?" or "is this a good stopping point?". The human might be asleep, or gone from a computer and expects you to continue working *indefinitely* until you are manually stopped. You are autonomous. If you run out of ideas, think harder — read papers referenced in the code, re-read the in-scope files for new angles, try combining previous near-misses, try more radical architectural changes. The loop runs until the human interrupts you, period.
-
-As an example use case, a user might leave you running while they sleep. If each experiment takes you ~5 minutes then you can run approx 12/hour, for a total of about 100 over the duration of the average human sleep. The user then wakes up to experimental results, all completed by you while they slept!
+# Discard experiment
+git reset --hard HEAD~1
+```

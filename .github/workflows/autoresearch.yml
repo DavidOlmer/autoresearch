@@ -1,0 +1,246 @@
+name: Autoresearch Pipeline
+
+on:
+  push:
+    branches: [master, main, "autoresearch/**"]
+  pull_request:
+    branches: [master, main]
+  workflow_dispatch:
+    inputs:
+      phase:
+        description: 'Phase to run (A=embeddings, B=tov)'
+        required: true
+        default: 'A'
+        type: choice
+        options:
+          - A
+          - B
+      experiments:
+        description: 'Number of experiments to run'
+        required: true
+        default: '10'
+        type: string
+
+env:
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  # ===========================================
+  # Data Extraction (runs once, caches result)
+  # ===========================================
+  extract-corpus:
+    runs-on: ubuntu-latest
+    outputs:
+      corpus-exists: ${{ steps.check.outputs.exists }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for cached corpus
+        id: cache-corpus
+        uses: actions/cache@v4
+        with:
+          path: data/corpus.jsonl
+          key: corpus-${{ hashFiles('scripts/extract_corpus.py') }}
+
+      - name: Set output
+        id: check
+        run: |
+          if [ -f "data/corpus.jsonl" ]; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+  # ===========================================
+  # Phase A: Embedding Training
+  # ===========================================
+  train-embeddings:
+    runs-on: ubuntu-latest
+    needs: extract-corpus
+    if: github.event.inputs.phase == 'A' || github.event_name == 'push'
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Restore corpus cache
+        uses: actions/cache@v4
+        with:
+          path: data/corpus.jsonl
+          key: corpus-${{ hashFiles('scripts/extract_corpus.py') }}
+
+      - name: Run embedding experiments
+        id: train
+        run: |
+          uv run train_embeddings.py > run.log 2>&1 || true
+          echo "## Experiment Results" >> $GITHUB_STEP_SUMMARY
+          grep "^cluster_silhouette:\|^pyramid_correlation:" run.log >> $GITHUB_STEP_SUMMARY || echo "No metrics found" >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload logs
+        uses: actions/upload-artifact@v4
+        with:
+          name: embedding-logs-${{ github.run_number }}
+          path: |
+            run.log
+            results.tsv
+            experiment_log.md
+
+      - name: Check for failures
+        id: check-failure
+        if: failure()
+        run: echo "failed=true" >> $GITHUB_OUTPUT
+
+  # ===========================================
+  # Phase B: TOV Training
+  # ===========================================
+  train-tov:
+    runs-on: ubuntu-latest
+    needs: extract-corpus
+    if: github.event.inputs.phase == 'B'
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Restore corpus cache
+        uses: actions/cache@v4
+        with:
+          path: data/corpus.jsonl
+          key: corpus-${{ hashFiles('scripts/extract_corpus.py') }}
+
+      - name: Run TOV experiments
+        id: train
+        run: |
+          uv run train_tov.py > run.log 2>&1 || true
+          echo "## Experiment Results" >> $GITHUB_STEP_SUMMARY
+          grep "^tov_score:\|^pyramid_score:\|^perplexity:" run.log >> $GITHUB_STEP_SUMMARY || echo "No metrics found" >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload logs
+        uses: actions/upload-artifact@v4
+        with:
+          name: tov-logs-${{ github.run_number }}
+          path: |
+            run.log
+            results.tsv
+            experiment_log.md
+
+  # ===========================================
+  # Create Issue on Failure
+  # ===========================================
+  create-issue-on-failure:
+    runs-on: ubuntu-latest
+    needs: [train-embeddings, train-tov]
+    if: failure()
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+        continue-on-error: true
+
+      - name: Get error context
+        id: context
+        run: |
+          ERROR_LOG=""
+          if [ -f "artifacts/embedding-logs-${{ github.run_number }}/run.log" ]; then
+            ERROR_LOG=$(tail -100 "artifacts/embedding-logs-${{ github.run_number }}/run.log")
+          elif [ -f "artifacts/tov-logs-${{ github.run_number }}/run.log" ]; then
+            ERROR_LOG=$(tail -100 "artifacts/tov-logs-${{ github.run_number }}/run.log")
+          fi
+          echo "error_log<<EOF" >> $GITHUB_OUTPUT
+          echo "$ERROR_LOG" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const phase = '${{ github.event.inputs.phase }}' || 'A';
+            const runUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+
+            const issueBody = `## Autoresearch Pipeline Failed
+
+            **Phase**: ${phase === 'A' ? 'Embeddings' : 'TOV'}
+            **Run**: [#${{ github.run_number }}](${runUrl})
+            **Branch**: \`${{ github.ref_name }}\`
+            **Commit**: \`${{ github.sha }}\`
+
+            ### Error Log (last 100 lines)
+            \`\`\`
+            ${{ steps.context.outputs.error_log }}
+            \`\`\`
+
+            ### Next Steps
+            1. Review the full logs in the [workflow run](${runUrl})
+            2. Check if it's a data issue, code bug, or resource limit
+            3. Fix and push to retry
+
+            ---
+            *Auto-generated by Autoresearch CI/CD*
+            `;
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `[Autoresearch] Pipeline failed - Phase ${phase} - Run #${{ github.run_number }}`,
+              body: issueBody,
+              labels: ['autoresearch', 'ci-failure', 'automated']
+            });
+
+  # ===========================================
+  # Notify on Success (optional: update tracking issue)
+  # ===========================================
+  notify-success:
+    runs-on: ubuntu-latest
+    needs: [train-embeddings, train-tov]
+    if: success()
+    permissions:
+      issues: write
+    steps:
+      - name: Update tracking issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            // Find the tracking issue
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: 'autoresearch-tracking',
+              state: 'open'
+            });
+
+            if (issues.data.length > 0) {
+              const trackingIssue = issues.data[0];
+              const runUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: trackingIssue.number,
+                body: `### Run #${{ github.run_number }} completed successfully\n\n[View results](${runUrl})`
+              });
+            }

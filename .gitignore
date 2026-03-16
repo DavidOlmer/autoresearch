@@ -21,3 +21,24 @@ dev/
 
 # Results file
 results.tsv
+experiment_log.md
+run.log
+
+# Data (too large for git)
+data/corpus.jsonl
+data/*.jsonl
+
+# Model checkpoints
+checkpoints/
+*.pt
+*.pth
+*.bin
+*.safetensors
+
+# Logs
+*.log
+logs/
+
+# Cache
+.cache/
+~/.cache/autoresearch/

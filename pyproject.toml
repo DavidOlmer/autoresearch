@@ -1,19 +1,42 @@
 [project]
-name = "autoresearch"
-version = "0.1.0"
-description = "Autonomous pretraining research swarm"
+name = "rebel-autoresearch"
+version = "0.2.0"
+description = "Autonomous TOV research - embeddings and style fine-tuning for Rebel Group"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    # Core ML
+    "torch==2.9.1",
+    "numpy>=2.2.6",
+
+    # Transformers & Embeddings
+    "transformers>=4.40.0",
+    "sentence-transformers>=2.7.0",
+    "peft>=0.10.0",
+    "bitsandbytes>=0.43.0",
+    "accelerate>=0.30.0",
+
+    # Data processing
+    "python-docx>=1.1.0",
+    "PyMuPDF>=1.24.0",
+    "python-pptx>=0.6.23",
+
+    # ML utilities
+    "scikit-learn>=1.4.0",
+    "scipy>=1.13.0",
+
+    # Original autoresearch deps
     "kernels>=0.11.7",
     "matplotlib>=3.10.8",
-    "numpy>=2.2.6",
     "pandas>=2.3.3",
     "pyarrow>=21.0.0",
     "requests>=2.32.0",
     "rustbpe>=0.1.0",
     "tiktoken>=0.11.0",
-    "torch==2.9.1",
+
+    # Research APIs
+    "arxiv>=2.1.0",
+    "semanticscholar>=0.8.0",
 ]
 
 [tool.uv.sources]
@@ -25,3 +48,6 @@ torch = [
 name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/cu128"
 explicit = true
+
+[project.scripts]
+extract-corpus = "scripts.extract_corpus:main"
