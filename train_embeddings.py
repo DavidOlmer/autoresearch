@@ -13,11 +13,12 @@ The goal: maximize cluster_silhouette and pyramid_correlation.
 """
 
 import json
-import time
+import random
+import re
 import sys
+import time
 from pathlib import Path
 from typing import Optional
-import random
 
 # === CONFIGURATION (agent can modify) ===
 
@@ -37,6 +38,31 @@ LOSS_TYPE = "contrastive"  # Options: contrastive, triplet, multiple_negatives
 TEMPERATURE = 0.05
 HARD_NEGATIVE_RATIO = 0.5
 
+# Weak supervision
+FILENAME_NOISE_TOKENS = {
+    "clean",
+    "comments",
+    "concept",
+    "conceptversie",
+    "cs",
+    "def",
+    "definitief",
+    "definitieve",
+    "draft",
+    "eind",
+    "eo",
+    "final",
+    "finale",
+    "lf",
+    "opmerkingen",
+    "reacties",
+    "rebel",
+    "rep",
+    "review",
+    "schoon",
+    "trackchanges",
+}
+
 # Evaluation
 EVAL_EVERY_STEPS = 100
 TIME_BUDGET_SECONDS = 300  # 5 minutes
@@ -49,9 +75,18 @@ try:
     import torch.nn.functional as F
     from torch.utils.data import DataLoader, Dataset
     HAS_TORCH = True
-except ImportError:
+except (ImportError, OSError) as e:
     HAS_TORCH = False
-    print("WARNING: PyTorch not installed. Running in mock mode.")
+    print(f"WARNING: PyTorch not available ({type(e).__name__}). Running in mock mode.")
+    # Mock classes for testing utility functions without torch
+    class Dataset:
+        pass
+    class DataLoader:
+        pass
+    class nn:
+        class Module:
+            pass
+    torch = None
 
 try:
     from transformers import AutoModel, AutoTokenizer
@@ -71,6 +106,93 @@ except ImportError:
 
 
 # === DATA LOADING ===
+
+
+def infer_document_label(document: dict) -> str:
+    """
+    Infer a weak supervision label from the filename.
+
+    The extracted corpus does not currently expose project metadata, so we
+    derive a stable document-family label from the filename by removing dates,
+    version markers, and review-state suffixes.
+    """
+    filename = str(document.get("filename", "")).strip()
+    if not filename:
+        return f"document {document.get('id', 'unknown')}"
+
+    stem = Path(filename).stem.lower()
+    stem = re.sub(r"^[\W_]*\d{6,8}[\W_]*", "", stem)
+    # Remove version patterns before space normalization (e.g., v1.6, _v2.0_)
+    stem = re.sub(r"[_\s]*v\d+(?:\.\d+)*[_\s]*", " ", stem)
+    stem = re.sub(r"[\W_]+", " ", stem)
+
+    filtered_tokens = []
+    for token in stem.split():
+        if re.fullmatch(r"\d{4,8}", token):  # Filter date-like numbers (4-8 digits)
+            continue
+        if token in FILENAME_NOISE_TOKENS:
+            continue
+        filtered_tokens.append(token)
+
+    label = " ".join(filtered_tokens).strip()
+    if not label:
+        return f"document {document.get('id', 'unknown')}"
+    return label
+
+
+def build_document_preview(text: str, max_characters: int = 4000) -> str:
+    """
+    Keep signal-rich headings before truncating the document body.
+
+    Rebel reports are long and front-loaded with structure. Preserving
+    headings such as management summary, conclusions, and recommendations
+    yields a more representative preview than raw character truncation.
+    """
+    if not text:
+        return ""
+
+    stripped_lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not stripped_lines:
+        return ""
+
+    key_sections = []
+    for line in stripped_lines:
+        line_lower = line.lower()
+        is_short_heading = len(line.split()) <= 8 and len(line) <= 80
+        has_priority_keyword = any(
+            keyword in line_lower
+            for keyword in [
+                "managementsamenvatting",
+                "samenvatting",
+                "conclus",
+                "aanbevel",
+                "inleiding",
+                "doel",
+            ]
+        )
+        if is_short_heading or has_priority_keyword:
+            if line not in key_sections:
+                key_sections.append(line)
+
+    ordered_sections = key_sections + stripped_lines[:20]
+    preview_parts = []
+    current_length = 0
+    for line in ordered_sections:
+        addition = len(line) + (1 if preview_parts else 0)
+        if current_length + addition > max_characters:
+            break
+        preview_parts.append(line)
+        current_length += addition
+
+    return "\n".join(preview_parts)
+
+
+def encode_string_labels(values: list[str], device) -> "torch.Tensor":
+    """Map string labels to stable integer IDs within a batch."""
+    unique_values = sorted(set(values))
+    value_to_index = {value: index for index, value in enumerate(unique_values)}
+    return torch.tensor([value_to_index[value] for value in values], device=device)
+
 
 class RebelCorpusDataset(Dataset):
     """Dataset for Rebel documents."""
@@ -98,7 +220,8 @@ class RebelCorpusDataset(Dataset):
 
     def __getitem__(self, idx):
         doc = self.documents[idx]
-        text = doc.get("text", "")[:10000]  # Truncate very long docs
+        text = build_document_preview(doc.get("text", ""), max_characters=4000)
+        label = infer_document_label(doc)
 
         encoding = self.tokenizer(
             text,
@@ -111,7 +234,7 @@ class RebelCorpusDataset(Dataset):
         return {
             "input_ids": encoding["input_ids"].squeeze(0),
             "attention_mask": encoding["attention_mask"].squeeze(0),
-            "project": doc.get("project_number", "unknown"),
+            "project": label,
             "doc_id": doc.get("id", str(idx)),
         }
 
@@ -302,10 +425,8 @@ def train():
             attention_mask = batch["attention_mask"].to(device)
             projects = batch["project"]
 
-            # Convert projects to tensor labels
-            unique_projects = list(set(projects))
-            project_to_idx = {p: i for i, p in enumerate(unique_projects)}
-            labels = torch.tensor([project_to_idx[p] for p in projects], device=device)
+            # Convert weak supervision labels to tensor IDs for the batch.
+            labels = encode_string_labels(list(projects), device=device)
 
             # Forward pass
             embeddings = model(input_ids, attention_mask)
