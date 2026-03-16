@@ -310,7 +310,8 @@ class ContrastiveLoss(nn.Module):
         if pos_mask.sum() > 0:
             loss = -(log_prob * pos_mask).sum() / pos_mask.sum()
         else:
-            loss = torch.tensor(0.0, device=similarity.device)
+            # Return zero loss that maintains gradient connectivity
+            loss = (embeddings * 0).sum()
 
         return loss
 
