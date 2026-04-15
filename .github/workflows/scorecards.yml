@@ -1,0 +1,41 @@
+name: Scorecards
+
+on:
+  branch_protection_rule:
+  push:
+    branches:
+      - main
+      - master
+  schedule:
+    - cron: "23 2 * * 1"
+
+permissions: {}
+
+jobs:
+  analysis:
+    name: OpenSSF Scorecards
+    if: ${{ github.event.repository.private == false }}
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      security-events: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+
+      - name: Run OpenSSF Scorecard
+        uses: ossf/scorecard-action@4eaacf0543bb3f2c246792bd56e8cdeffafb205a
+        with:
+          publish_results: true
+          results_file: results.sarif
+          results_format: sarif
+
+      - name: Upload Scorecard SARIF
+        uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13
+        with:
+          sarif_file: results.sarif

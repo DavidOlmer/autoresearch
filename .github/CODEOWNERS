@@ -1,0 +1,3 @@
+# Workflow ownership
+.github/CODEOWNERS @DavidOlmer
+.github/workflows/* @DavidOlmer
